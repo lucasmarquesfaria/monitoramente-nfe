@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Monitoramento de NFe - MG</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-receipt me-2"></i> 
+                Monitor NFe MG
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link active" href="#"><i class="fas fa-home"></i> Início</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#consulta"><i class="fas fa-search"></i> Consultar NFe</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#status"><i class="fas fa-signal"></i> Status SEFAZ</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#historico"><i class="fas fa-history"></i> Histórico</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <section id="status" class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h4><i class="fas fa-signal me-2"></i> Status do Sistema SEFAZ-MG</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="status-container text-center">
+                            <h5>Status Atual:</h5>
+                            <div id="status-indicator" class="status-badge">
+                                <span class="spinner-border spinner-border-sm"></span> Verificando...
+                            </div>
+                            <p class="mt-2 text-muted">Última verificação: <span id="last-check">--</span></p>
+                            
+                            <div class="mt-3 dev-controls">
+                                <button id="toggle-status-btn" class="btn btn-outline-secondary">
+                                    <i class="fas fa-exchange-alt me-2"></i>Alternar Status (Simulação)
+                                </button>
+                                <div class="text-muted mt-2 small">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    Este botão está disponível apenas em ambiente de desenvolvimento.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5>Histórico de Status:</h5>
+                            <button id="refresh-status" class="btn btn-sm btn-outline-primary">
+                                <i class="fas fa-sync-alt"></i> Atualizar
+                            </button>
+                        </div>
+                        <div id="status-history" class="status-history">
+                            <div class="text-center py-3">
+                                <span class="spinner-border spinner-border-sm"></span> Carregando histórico...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="consulta" class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h4><i class="fas fa-search me-2"></i> Consulta de NFe</h4>
+            </div>
+            <div class="card-body">
+                <form id="nfe-form" class="mb-4">
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-8">
+                            <label for="chave-nfe" class="form-label">Chave de Acesso da NFe</label>
+                            <input type="text" class="form-control" id="chave-nfe" 
+                                placeholder="Digite a chave de acesso com 44 dígitos" 
+                                maxlength="44" required>
+                            <div class="form-text">A chave deve conter exatamente 44 dígitos numéricos</div>
+                        </div>
+                        <div class="col-md-4">
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="fas fa-search me-2"></i> Consultar
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <div id="resultado-container" class="mt-4 d-none">
+                    <h5 class="border-bottom pb-2 mb-3">Resultado da Consulta</h5>
+                    <div id="resultado-content"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="historico" class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h4><i class="fas fa-history me-2"></i> Histórico de Rejeições</h4>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Data/Hora</th>
+                                <th>Chave NFe</th>
+                                <th>Status</th>
+                                <th>Motivo</th>
+                                <th>Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody id="rejeicoes-table">
+                            <tr>
+                                <td colspan="5" class="text-center py-3">
+                                    <span class="spinner-border spinner-border-sm"></span> Carregando histórico de rejeições...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <div class="modal fade" id="nfeDetailModal" tabindex="-1" aria-labelledby="nfeDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title" id="nfeDetailModalLabel">Detalhes da NFe</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="modal-content"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                    <button type="button" id="btn-download-xml" class="btn btn-primary">
+                        <i class="fas fa-download me-2"></i> Download XML
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
