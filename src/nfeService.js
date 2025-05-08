@@ -1,6 +1,10 @@
+/**
+ * Serviço de Nota Fiscal Eletrônica
+ * Responsável por consultar, processar e gerenciar dados de NFEs
+ */
 const axios = require('axios');
 const xml2js = require('xml2js');
-const { createConnection } = require('../database/connection');
+const { executeQuery } = require('../database/connection');
 const sefazMonitorService = require('./sefazMonitorService');
 
 class NfeService {
@@ -9,12 +13,19 @@ class NfeService {
     this.baseUrl = process.env.API_NFE_URL || 'https://nfe.fazenda.mg.gov.br/nfe2/services';
   }
 
+  /**
+   * Consulta uma NFe pela chave de acesso
+   * @param {string} chaveAcesso - Chave de acesso da NFe (44 dígitos)
+   * @returns {Promise<Object>} Resultado da consulta com dados da NFe
+   */
   async consultarNfe(chaveAcesso) {
     try {
-      if (!/^\d{44}$/.test(chaveAcesso)) {
+      // Validar formato da chave de acesso
+      if (!this.validarChaveAcesso(chaveAcesso)) {
         throw new Error('Chave de acesso inválida. Deve conter exatamente 44 dígitos numéricos.');
       }
 
+      // Verificar se NFe já existe no banco de dados
       const nfeExistente = await this.buscarNfePorChave(chaveAcesso);
       if (nfeExistente) {
         return { 
@@ -24,69 +35,57 @@ class NfeService {
         };
       }
       
-      const resultado = await sefazMonitorService.requisitarSefaz('nfeConsultaProtocolo', {
-        chaveAcesso: chaveAcesso
-      }, 'post');
+      // Consultar NFe na API da SEFAZ
+      return await this.consultarNfeNaApi(chaveAcesso);
       
-      if (!resultado.success) {
-        if (process.env.NODE_ENV === 'development') {
-          const nfeSimulada = this.gerarNfeSimulada(chaveAcesso);
-          await this.salvarNfeNoBanco(nfeSimulada, '<xml_simulado/>');
-          return { success: true, data: nfeSimulada, simulated: true };
-        }
-        
-        throw new Error(resultado.error || 'Erro na consulta à API da SEFAZ');
-      }
-      
-      const data = resultado.data;
-      const xmlContent = data.xml || '';
-      
-      let nfeData;
-      if (xmlContent) {
-        nfeData = await this.processarXmlNfe(xmlContent);
-      } else {
-        nfeData = this.extrairDadosNfeDoJson(data);
-      }
-      
-      await this.salvarNfeNoBanco(nfeData, xmlContent);
-      return { success: true, data: nfeData, xml: xmlContent };
     } catch (error) {
       console.error('Erro ao consultar NFe:', error.message);
-      
-      if (process.env.NODE_ENV === 'development') {
-        const nfeSimulada = this.gerarNfeSimulada(chaveAcesso);
-        await this.salvarNfeNoBanco(nfeSimulada, '<xml_simulado/>');
-        return { success: true, data: nfeSimulada, simulated: true };
-      }
-      
-      return { 
-        success: false, 
-        error: error.message || 'Erro na consulta', 
-        details: error.response?.data || 'Sem detalhes adicionais' 
-      };
+      return this.formatarRespostaErro(error);
     }
   }
   
-  gerarNfeSimulada(chaveAcesso) {
-    const hoje = new Date();
-    const valorAleatorio = Math.floor(Math.random() * 10000) / 100;
-    
-    return {
-      chave: chaveAcesso,
-      numero: Math.floor(Math.random() * 1000000).toString(),
-      serie: Math.floor(Math.random() * 999).toString(),
-      dataEmissao: hoje,
-      valorTotal: valorAleatorio,
-      emitenteCnpj: '12345678901234',
-      emitenteNome: 'EMPRESA SIMULADA LTDA',
-      destinatarioCnpj: '98765432109876',
-      destinatarioNome: 'CLIENTE SIMULADO SA',
-      status: Math.random() > 0.3 ? 'PROCESSADA' : 'REJEITADA',
-      motivoRejeicao: null,
-      codigoRejeicao: null
-    };
+  /**
+   * Valida se a chave de acesso está no formato correto (44 dígitos numéricos)
+   * @param {string} chaveAcesso - Chave de acesso para validar
+   * @returns {boolean} Verdadeiro se a chave for válida
+   */
+  validarChaveAcesso(chaveAcesso) {
+    return /^\d{44}$/.test(chaveAcesso);
   }
   
+  /**
+   * Consulta NFe diretamente na API da SEFAZ
+   * @param {string} chaveAcesso - Chave de acesso da NFe
+   * @returns {Promise<Object>} Resultados da consulta
+   */
+  async consultarNfeNaApi(chaveAcesso) {
+    const resultado = await sefazMonitorService.requisitarSefaz('nfeConsultaProtocolo', {
+      chaveAcesso: chaveAcesso
+    }, 'post');
+    
+    if (!resultado.success) {
+      throw new Error(resultado.error || 'Erro na consulta à API da SEFAZ');
+    }
+    
+    const data = resultado.data;
+    const xmlContent = data.xml || '';
+    
+    let nfeData;
+    if (xmlContent) {
+      nfeData = await this.processarXmlNfe(xmlContent);
+    } else {
+      nfeData = this.extrairDadosNfeDoJson(data);
+    }
+    
+    await this.salvarNfeNoBanco(nfeData, xmlContent);
+    return { success: true, data: nfeData, xml: xmlContent };
+  }
+  
+  /**
+   * Converte dados da NFe do formato do banco de dados para objeto de resposta
+   * @param {Object} nfeBanco - Dados da NFe no formato do banco
+   * @returns {Object} Objeto formatado para resposta ao cliente
+   */
   converterNfeBancoDadosParaObjeto(nfeBanco) {
     return {
       chave: nfeBanco.chave,
@@ -106,6 +105,11 @@ class NfeService {
     };
   }
 
+  /**
+   * Processa o conteúdo XML da NFe e extrai os dados
+   * @param {string} xmlContent - Conteúdo XML da NFe
+   * @returns {Promise<Object>} Dados estruturados da NFe
+   */
   async processarXmlNfe(xmlContent) {
     try {
       const result = await this.parser.parseStringPromise(xmlContent);
@@ -136,10 +140,15 @@ class NfeService {
       };
     } catch (error) {
       console.error('Erro ao processar o XML da NFe:', error.message);
-      throw error;
+      throw new Error(`Falha ao processar XML: ${error.message}`);
     }
   }
 
+  /**
+   * Extrai dados da NFe a partir de um objeto JSON
+   * @param {Object} jsonData - Dados da NFe em formato JSON
+   * @returns {Object} Dados estruturados da NFe
+   */
   extrairDadosNfeDoJson(jsonData) {
     const data = jsonData.nfe || jsonData.dados || jsonData;
     
@@ -157,62 +166,64 @@ class NfeService {
     };
   }
 
+  /**
+   * Salva os dados da NFe no banco de dados
+   * @param {Object} nfeData - Dados da NFe
+   * @param {string} xmlContent - Conteúdo XML da NFe
+   * @returns {Promise<Object>} Resultado da operação
+   */
   async salvarNfeNoBanco(nfeData, xmlContent) {
-    let connection;
+    const query = `
+      INSERT INTO nfes (
+        chave, numero, serie, data_emissao, valor_total, 
+        emitente_cnpj, emitente_nome, destinatario_cnpj, 
+        destinatario_nome, status, xml_conteudo
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        numero = VALUES(numero),
+        serie = VALUES(serie),
+        data_emissao = VALUES(data_emissao),
+        valor_total = VALUES(valor_total),
+        emitente_cnpj = VALUES(emitente_cnpj),
+        emitente_nome = VALUES(emitente_nome),
+        destinatario_cnpj = VALUES(destinatario_cnpj),
+        destinatario_nome = VALUES(destinatario_nome),
+        status = VALUES(status),
+        xml_conteudo = VALUES(xml_conteudo),
+        data_consulta = CURRENT_TIMESTAMP
+    `;
+    
+    const values = [
+      nfeData.chave,
+      nfeData.numero,
+      nfeData.serie,
+      nfeData.dataEmissao,
+      nfeData.valorTotal,
+      nfeData.emitenteCnpj,
+      nfeData.emitenteNome,
+      nfeData.destinatarioCnpj,
+      nfeData.destinatarioNome,
+      nfeData.status,
+      xmlContent || null
+    ];
+    
     try {
-      connection = await createConnection();
-      
-      const query = `
-        INSERT INTO nfes (
-          chave, numero, serie, data_emissao, valor_total, 
-          emitente_cnpj, emitente_nome, destinatario_cnpj, 
-          destinatario_nome, status, xml_conteudo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          numero = VALUES(numero),
-          serie = VALUES(serie),
-          data_emissao = VALUES(data_emissao),
-          valor_total = VALUES(valor_total),
-          emitente_cnpj = VALUES(emitente_cnpj),
-          emitente_nome = VALUES(emitente_nome),
-          destinatario_cnpj = VALUES(destinatario_cnpj),
-          destinatario_nome = VALUES(destinatario_nome),
-          status = VALUES(status),
-          xml_conteudo = VALUES(xml_conteudo),
-          data_consulta = CURRENT_TIMESTAMP
-      `;
-      
-      const values = [
-        nfeData.chave,
-        nfeData.numero,
-        nfeData.serie,
-        nfeData.dataEmissao,
-        nfeData.valorTotal,
-        nfeData.emitenteCnpj,
-        nfeData.emitenteNome,
-        nfeData.destinatarioCnpj,
-        nfeData.destinatarioNome,
-        nfeData.status,
-        xmlContent || null
-      ];
-      
-      const [result] = await connection.execute(query, values);
+      const result = await executeQuery(query, values);
       return result;
     } catch (error) {
       console.error('Erro ao salvar NFe no banco de dados:', error.message);
-      throw error;
-    } finally {
-      if (connection) {
-        await connection.end();
-      }
+      throw new Error(`Erro ao salvar dados: ${error.message}`);
     }
   }
 
+  /**
+   * Busca uma NFe no banco de dados pela chave de acesso
+   * @param {string} chaveAcesso - Chave de acesso da NFe
+   * @returns {Promise<Object|null>} Dados da NFe ou null se não encontrada
+   */
   async buscarNfePorChave(chaveAcesso) {
-    let connection;
     try {
-      connection = await createConnection();
-      const [rows] = await connection.execute(
+      const rows = await executeQuery(
         'SELECT * FROM nfes WHERE chave = ?', 
         [chaveAcesso]
       );
@@ -220,19 +231,21 @@ class NfeService {
       return rows.length > 0 ? rows[0] : null;
     } catch (error) {
       console.error('Erro ao buscar NFe no banco de dados:', error.message);
-      throw error;
-    } finally {
-      if (connection) {
-        await connection.end();
-      }
+      throw new Error(`Erro na consulta ao banco: ${error.message}`);
     }
   }
   
+  /**
+   * Gera o arquivo XML de uma NFe
+   * @param {string} chaveAcesso - Chave de acesso da NFe
+   * @returns {Promise<string>} Conteúdo XML da NFe
+   */
   async gerarArquivoXml(chaveAcesso) {
     try {
       const nfeData = await this.buscarNfePorChave(chaveAcesso);
       
       if (!nfeData || !nfeData.xml_conteudo) {
+        // Se não temos o XML, tentamos consultá-lo novamente
         const resultado = await this.consultarNfe(chaveAcesso);
         if (!resultado.success) {
           throw new Error(`Não foi possível consultar a NFe: ${resultado.error}`);
@@ -243,8 +256,21 @@ class NfeService {
       return nfeData.xml_conteudo;
     } catch (error) {
       console.error('Erro ao gerar arquivo XML:', error.message);
-      throw error;
+      throw new Error(`Falha ao gerar XML: ${error.message}`);
     }
+  }
+  
+  /**
+   * Formata resposta de erro de forma padronizada
+   * @param {Error} error - Objeto de erro
+   * @returns {Object} Resposta de erro formatada
+   */
+  formatarRespostaErro(error) {
+    return { 
+      success: false, 
+      error: error.message || 'Erro na consulta', 
+      details: error.response?.data || 'Sem detalhes adicionais' 
+    };
   }
 }
 

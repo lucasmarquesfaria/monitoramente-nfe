@@ -90,16 +90,45 @@ async function verificarStatusSefaz() {
         
         statusIndicator.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Verificando...';
         
-        const response = await fetch(`${API_BASE_URL}/status-sefaz-mg`);
-        const data = await response.json();
+        // Adicionar timeout para a requisição fetch
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos de timeout
+        
+        const response = await fetch(`${API_BASE_URL}/status-sefaz-mg/verificar`, {
+            signal: controller.signal,
+            headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+        });
+        
+        clearTimeout(timeoutId);
         
         if (!response.ok) {
-            throw new Error(data.error || 'Erro ao verificar status');
+            let errorData;
+            try {
+                errorData = await response.json();
+            } catch (parseError) {
+                throw new Error(`Erro de rede: ${response.status}`);
+            }
+            throw new Error(errorData.error || `Erro ao verificar status (${response.status})`);
         }
         
-        const statusClass = data.online ? 'status-online' : 'status-offline';
-        const statusText = data.online ? 'Online - Sistema Operacional' : 'Offline - Sistema Indisponível';
-        const statusIcon = data.online ? 'check-circle' : 'times-circle';
+        const data = await response.json();
+        
+        // Aceitar resposta mesmo que success não seja true, contanto que tenha o campo online
+        if (data.online === undefined && !data.success) {
+            throw new Error(data.error || 'Resposta inválida do servidor');
+        }
+        
+        console.log('Status SEFAZ recebido:', data);
+        
+        // Sempre usar o campo online da resposta, independente do campo success
+        const online = Boolean(data.online);
+        
+        const statusClass = online ? 'status-online' : 'status-offline';
+        const statusText = online ? 'Online - Sistema Operacional' : 'Offline - Sistema Indisponível';
+        const statusIcon = online ? 'check-circle' : 'times-circle';
         
         statusIndicator.className = `status-badge ${statusClass}`;
         statusIndicator.innerHTML = `<i class="fas fa-${statusIcon} me-2"></i>${statusText}`;
@@ -109,17 +138,31 @@ async function verificarStatusSefaz() {
             lastCheck.textContent = formatarDataHora(agora);
         }
         
-        adicionarEntradaHistorico(data.online ? 'online' : 'offline', agora);
+        adicionarEntradaHistorico(online ? 'online' : 'offline', agora);
         salvarHistoricoLocal();
         
-        return data.online;
+        // Atualiza o histórico do servidor
+        await atualizarHistoricoStatus().catch(err => {
+            console.warn('Erro ao atualizar histórico, usando dados locais:', err.message);
+        });
+        
+        return online;
     } catch (error) {
         console.error('Erro ao verificar status SEFAZ:', error);
+        
         if (statusIndicator) {
             statusIndicator.className = 'status-badge status-warning';
             statusIndicator.innerHTML = '<i class="fas fa-exclamation-triangle me-2"></i>Erro ao verificar status';
         }
-        return false;
+        
+        // Em caso de erro, usa o último status conhecido do histórico local (se disponível)
+        if (statusHistory.length > 0) {
+            const ultimoStatus = statusHistory[0].status === 'online';
+            return ultimoStatus;
+        }
+        
+        // Se não houver histórico, assume online para evitar alarmes falsos
+        return true;
     }
 }
 
@@ -133,7 +176,8 @@ async function alternarStatusSimulado() {
         const response = await fetch(`${API_BASE_URL}/simular-status-sefaz-mg/toggle`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache'
             }
         });
         
@@ -143,9 +187,35 @@ async function alternarStatusSimulado() {
             throw new Error(data.error || 'Erro ao alternar status');
         }
         
-        await verificarStatusSefaz();
+        // Forçar atualizações imediatas na interface
+        const online = Boolean(data.online);
+        const statusClass = online ? 'status-online' : 'status-offline';
+        const statusText = online ? 'Online - Sistema Operacional' : 'Offline - Sistema Indisponível';
+        const statusIcon = online ? 'check-circle' : 'times-circle';
         
-        alert(`Status alterado com sucesso para: ${data.online ? 'Online' : 'Offline'}`);
+        if (statusIndicator) {
+            statusIndicator.className = `status-badge ${statusClass}`;
+            statusIndicator.innerHTML = `<i class="fas fa-${statusIcon} me-2"></i>${statusText}`;
+        }
+        
+        // Adiciona ao histórico local
+        const agora = new Date();
+        adicionarEntradaHistorico(online ? 'online' : 'offline', agora);
+        salvarHistoricoLocal();
+        
+        // Atualiza último horário de verificação
+        if (lastCheck) {
+            lastCheck.textContent = formatarDataHora(agora);
+        }
+        
+        // Atualizar o histórico de status
+        setTimeout(() => {
+            atualizarHistoricoStatus().catch(err => {
+                console.warn('Erro ao atualizar histórico após alternar status:', err);
+            });
+        }, 500);
+        
+        alert(`Status alterado com sucesso para: ${online ? 'Online' : 'Offline'}`);
     } catch (error) {
         console.error('Erro ao alternar status:', error);
         alert('Erro ao alternar status: ' + error.message);
@@ -310,6 +380,11 @@ function renderizarDetalhesRejeicao(nfe) {
 
 async function carregarHistoricoRejeicoes() {
     try {
+        if (!rejeicoesTable) {
+            console.warn('Elemento de tabela de rejeições não encontrado');
+            return;
+        }
+
         rejeicoesTable.innerHTML = `
             <tr>
                 <td colspan="5" class="text-center py-3">
@@ -319,26 +394,46 @@ async function carregarHistoricoRejeicoes() {
         `;
         
         const response = await fetch(`${API_BASE_URL}/nfes-rejeitadas`);
-        const data = await response.json();
         
-        if (!response.ok || !data.success) {
-            throw new Error(data.error || 'Erro ao carregar histórico');
+        // Verificar se houve falha na requisição HTTP
+        if (!response.ok) {
+            // Tentar analisar a resposta mesmo em caso de erro HTTP
+            let errorData;
+            try {
+                errorData = await response.json();
+            } catch (parseErr) {
+                throw new Error(`Erro HTTP: ${response.status}`);
+            }
+            throw new Error(errorData.error || `Erro ao carregar histórico (${response.status})`);
         }
         
+        const data = await response.json();
+        
+        // Sempre verifique se a propriedade data existe, mesmo que success seja true
+        if (!data || !data.data) {
+            throw new Error('Resposta sem dados recebida do servidor');
+        }
+        
+        console.log('Dados de rejeições recebidos:', data);
         renderizarTabelaRejeicoes(data.data);
         
     } catch (error) {
         console.error('Erro ao carregar histórico de rejeições:', error);
-        rejeicoesTable.innerHTML = `
-            <tr>
-                <td colspan="5" class="text-center py-3">
-                    <div class="alert alert-danger mb-0">
-                        <i class="fas fa-exclamation-circle me-2"></i>
-                        Erro ao carregar histórico de rejeições. Tente novamente.
-                    </div>
-                </td>
-            </tr>
-        `;
+        if (rejeicoesTable) {
+            rejeicoesTable.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center py-3">
+                        <div class="alert alert-danger mb-0">
+                            <i class="fas fa-exclamation-circle me-2"></i>
+                            Erro ao carregar histórico de rejeições: ${error.message}. 
+                            <button class="btn btn-sm btn-outline-danger ms-2" onclick="carregarHistoricoRejeicoes()">
+                                Tentar novamente
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
     }
 }
 
@@ -530,6 +625,50 @@ function carregarHistoricoLocal() {
     } catch (error) {
         console.error('Erro ao carregar histórico do localStorage:', error);
         statusHistory = [];
+    }
+}
+
+async function atualizarHistoricoStatus() {
+    try {
+        if (!statusHistoryElement) return;
+        
+        const response = await fetch(`${API_BASE_URL}/status-sefaz-mg/historico?limit=20`);
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || `Erro ao obter histórico de status (${response.status})`);
+        }
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(data.error || 'Erro ao obter histórico de status');
+        }
+        
+        // Atualiza histórico de status com dados do servidor
+        if (data.data && data.data.length > 0) {
+            console.log('Histórico de status recebido do servidor:', data.data);
+            
+            // Atualiza o histórico local com os dados do servidor
+            const historicoServidor = data.data.map(item => ({
+                status: item.online ? 'online' : 'offline',
+                timestamp: new Date(item.timestamp).getTime()
+            }));
+            
+            // Mescla histórico do servidor com o histórico local
+            statusHistory = [...historicoServidor];
+            
+            // Limita o número de entradas no histórico
+            if (statusHistory.length > 20) {
+                statusHistory = statusHistory.slice(0, 20);
+            }
+            
+            // Atualiza a exibição e salva o histórico local
+            renderizarHistorico();
+            salvarHistoricoLocal();
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar histórico de status:', error);
     }
 }
 
